@@ -1,0 +1,7 @@
+{
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "weighted_f1": 1.0,
+    "disease_classes": 41,
+    "symptom_features": 131
+}
