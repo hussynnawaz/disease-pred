@@ -1,0 +1,13 @@
+flask
+flask-cors
+numpy
+pandas
+joblib
+scikit-learn
+# Primary inference backend (requires Python <= 3.13):
+tensorflow
+# Automatic fallback used by app.py when TensorFlow is unavailable
+# (e.g. Python 3.14): standalone Keras with the JAX backend.
+keras
+jax
+jaxlib
