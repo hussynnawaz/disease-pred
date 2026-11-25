@@ -34,6 +34,9 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "health_monitoring_model.keras"
 ARTIFACTS_PATH = BASE_DIR / "health_monitoring_artifacts.pkl"
 METRICS_PATH = BASE_DIR / "model_metrics.json"
+DESCRIPTION_CSV = BASE_DIR / "symptom_Description.csv"
+PRECAUTION_CSV = BASE_DIR / "symptom_precaution.csv"
+SEVERITY_CSV = BASE_DIR / "Symptom-severity.csv"
 
 DISCLAIMER = (
     "AI-generated preliminary information. Not a medical diagnosis. "
@@ -52,12 +55,10 @@ MODEL_LOADED = False
 SYMPTOM_VOCABULARY = []          # authoritative 131-feature ordering
 SEVERITY_MAP = {}                # symptom -> severity weight
 LABEL_ENCODER = None             # sklearn LabelEncoder (41 classes)
-DESCRIPTION_MAP = {}             # disease -> description
-PRECAUTION_MAP = {}              # disease -> [precautions]
 
 # canonical (lowercase, single-underscore) symptom name -> vocabulary entry
 _CANONICAL_TO_VOCAB = {}
-# canonical disease name -> description / precautions (from artifacts only)
+# canonical disease name -> description / precautions loaded from CSVs
 _CANONICAL_TO_DESC = {}
 _CANONICAL_TO_PREC = {}
 
@@ -82,15 +83,14 @@ def _load_keras_model():
 
 
 def load_all():
-    """Load model, artifacts and metrics exactly once (no CSVs)."""
+    """Load model, artifacts, metrics and CSV files (for descriptions/precautions) at startup."""
     global MODEL, ARTIFACTS, METRICS, MODEL_BACKEND, MODEL_LOADED
     global SYMPTOM_VOCABULARY, SEVERITY_MAP, LABEL_ENCODER
-    global DESCRIPTION_MAP, PRECAUTION_MAP
     global _CANONICAL_TO_VOCAB, _CANONICAL_TO_DESC, _CANONICAL_TO_PREC
 
     missing = [
         p.name
-        for p in (MODEL_PATH, ARTIFACTS_PATH, METRICS_PATH)
+        for p in (MODEL_PATH, ARTIFACTS_PATH, METRICS_PATH, DESCRIPTION_CSV, PRECAUTION_CSV)
         if not p.exists()
     ]
     if missing:
@@ -99,34 +99,52 @@ def load_all():
     # 1. Trained model (once)
     MODEL, MODEL_BACKEND = _load_keras_model()
 
-    # 2. Training artifacts — the single source of truth for
-    #    feature order, severity weights, labels, descriptions, precautions
+    # 2. Training artifacts — authoritative for feature order, severity weights, labels
     ARTIFACTS = joblib.load(ARTIFACTS_PATH)
     SYMPTOM_VOCABULARY = list(ARTIFACTS["symptom_vocabulary"])
     SEVERITY_MAP = dict(ARTIFACTS["severity_map"])
     LABEL_ENCODER = ARTIFACTS["label_encoder"]
-    DESCRIPTION_MAP = dict(ARTIFACTS["description_map"])
-    PRECAUTION_MAP = dict(ARTIFACTS["precaution_map"])
 
     # 3. Model metrics
     with open(METRICS_PATH, "r", encoding="utf-8") as f:
         METRICS = json.load(f)
 
-    # 4. Lookup indexes (built from artifacts only)
+    # 4. Symptom vocabulary lookup
     _CANONICAL_TO_VOCAB = {_canonical(v): v for v in SYMPTOM_VOCABULARY}
-    _CANONICAL_TO_DESC = {_canonical(k): str(v) for k, v in DESCRIPTION_MAP.items()}
-    _CANONICAL_TO_PREC = {_canonical(k): list(v) for k, v in PRECAUTION_MAP.items()}
 
-    # The notebook's label encoder contains one misspelled class
-    # ("hemmorhoids" vs "hemorrhoids") — bridge such cases by close match.
+    # 5. Load disease descriptions directly from CSV (authoritative for UI text)
+    _CANONICAL_TO_DESC = {}
+    desc_df = pd.read_csv(DESCRIPTION_CSV)
+    for _, row in desc_df.iterrows():
+        disease = str(row["Disease"]).strip()
+        desc = str(row["Description"]).strip()
+        _CANONICAL_TO_DESC[_canonical(disease)] = desc
+
+    # 6. Load disease precautions directly from CSV (authoritative for UI text)
+    _CANONICAL_TO_PREC = {}
+    prec_df = pd.read_csv(PRECAUTION_CSV)
+    for _, row in prec_df.iterrows():
+        disease = str(row["Disease"]).strip()
+        precs = []
+        for col in prec_df.columns[1:]:
+            val = row.get(col)
+            if pd.notna(val):
+                s = str(val).strip()
+                if s:
+                    precs.append(s)
+        _CANONICAL_TO_PREC[_canonical(disease)] = precs
+
+    # Also fold in any descriptions/precautions from artifacts for label-encoder classes
+    # that might differ in spelling but share the same canonical key (e.g. hemmorhoids).
     for cls in LABEL_ENCODER.classes_:
         key = _canonical(cls)
         if key not in _CANONICAL_TO_DESC:
-            close = difflib.get_close_matches(key, _CANONICAL_TO_DESC.keys(), n=1)
+            # try close match
+            close = difflib.get_close_matches(key, _CANONICAL_TO_DESC.keys(), n=1, cutoff=0.6)
             if close:
                 _CANONICAL_TO_DESC[key] = _CANONICAL_TO_DESC[close[0]]
         if key not in _CANONICAL_TO_PREC:
-            close = difflib.get_close_matches(key, _CANONICAL_TO_PREC.keys(), n=1)
+            close = difflib.get_close_matches(key, _CANONICAL_TO_PREC.keys(), n=1, cutoff=0.6)
             if close:
                 _CANONICAL_TO_PREC[key] = _CANONICAL_TO_PREC[close[0]]
 
@@ -248,6 +266,74 @@ def metrics():
     return jsonify(METRICS)
 
 
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    """Minimal guidance chatbot (not a clinician)."""
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("message", "") or "").lower().strip()
+    if not text:
+        return jsonify({
+            "reply": "Please type a message. I can share general guidance, but I cannot diagnose or prescribe.",
+            "disclaimer": DISCLAIMER,
+        })
+
+    # Keyword-based guidance (keeps it safe and simple)
+    if any(k in text for k in ["headache and nausea", "nausea and headache"]):
+        reply = ("Headache with nausea can have many causes (migraine, dehydration, infection, etc.). "
+                 "Rest in a quiet/dark space if helpful, stay hydrated, and avoid triggers. "
+                 "Seek urgent care for sudden severe headache, confusion, fainting, stiff neck, fever, vision changes, or weakness. "
+                 "Use the Symptom Checker with at least 3 symptoms for a preliminary model-based overview (not a diagnosis).")
+    elif any(k in text for k in ["headache", "head pain", "migraine"]):
+        reply = ("For headaches: rest, hydration, limit screen strain, and note triggers. "
+                 "Seek urgent care for sudden severe headache, confusion, fainting, vision changes, "
+                 "or weakness. This is general guidance, not a diagnosis.")
+    elif any(k in text for k in ["fever", "temperature", "hot", "chills"]):
+        reply = ("For fever/chills: monitor temperature, stay hydrated, rest. Seek urgent care if very high, "
+                 "persistent, or with breathing difficulty, chest pain, confusion, or severe pain.")
+    elif any(k in text for k in ["fatigue", "tired", "exhausted", "weakness", "weak"]):
+        reply = ("Fatigue/weakness can have many causes (sleep, stress, illness, dehydration, anemia, etc.). "
+                 "Rest, hydrate, eat balanced meals, and track other symptoms (fever, weight change, pain). "
+                 "If fatigue is severe, sudden, worsening, or comes with chest pain/breathing issues/fainting, seek medical care promptly. "
+                 "For a preliminary check based on multiple symptoms, use the Symptom Checker in this app (not a diagnosis).")
+    elif any(k in text for k in ["nausea", "vomit", "throwing up"]):
+        reply = ("For nausea/vomiting: sip fluids, eat bland foods if tolerated, and rest. Seek care for dehydration, "
+                 "blood in vomit, severe abdominal pain, high fever, or symptoms lasting more than a day or two.")
+    elif any(k in text for k in ["stomach", "abdominal", "belly", "acidity", "heartburn"]):
+        reply = ("For stomach/abdominal discomfort: note timing, triggers, and associated symptoms. Avoid spicy/fatty foods if they worsen symptoms. "
+                 "Seek urgent care for severe pain, vomiting blood, black stools, fever, or a rigid abdomen.")
+    elif any(k in text for k in ["cough", "cold", "sneeze", "runny nose", "congestion"]):
+        reply = ("For cold/cough symptoms: rest, fluids, and humidified air may help. Seek care if you have trouble breathing, "
+                 "chest pain, high/persistent fever, or symptoms worsening after initial improvement.")
+    elif any(k in text for k in ["rash", "itch", "itching", "skin"]):
+        reply = ("For rash/itching: avoid scratching, keep the area clean and dry, and watch for spreading, pain, fever, or pus. "
+                 "A clinician or dermatologist can advise safely, especially if widespread or severe.")
+    elif any(k in text for k in ["medicine", "medication", "dosage", "pill", "tablet", "drug"]):
+        reply = ("I cannot provide personalized dosing or tell you if a medicine is safe for you. "
+                 "Always follow the label and consult a pharmacist or clinician. Use the Medications "
+                 "section for sample reference info only (not prescriptions).")
+    elif any(k in text for k in ["pain", "ache"]):
+        reply = ("Pain can come from many causes. Note location, severity, duration, and triggers. "
+                 "Use general self-care only if mild and known cause; seek care for severe, sudden, or unexplained pain "
+                 "(especially chest, head, abdomen, or after injury).")
+    elif any(k in text for k in ["anxiety", "stress", "worried"]):
+        reply = ("For stress/anxiety: try grounding/breathing exercises, sleep, movement, and reducing caffeine if helpful. "
+                 "If anxiety is overwhelming, persistent, or affecting daily life, consider speaking with a healthcare or mental health professional.")
+    elif any(k in text for k in ["hunger", "hungry", "appetite", "eating", "not eating"]):
+        reply = ("Changes in hunger/appetite can happen with stress, sleep changes, illness, or medications. "
+                 "Try regular meals/snacks, hydration, and note other symptoms (weight change, nausea, fatigue). "
+                 "If appetite loss or excessive hunger is persistent, unexplained, or paired with worrying symptoms, consider speaking with a clinician. "
+                 "For a symptom-based overview, you can use the Symptom Checker (select 3+ symptoms).")
+    else:
+        reply = (
+            "I’m here to offer general health guidance and help you use this app (Symptom Checker, Health Records, Medications). "
+            "I can’t diagnose or prescribe. For urgent or severe symptoms, seek immediate care. "
+            "Tell me what you’re experiencing (e.g. headache, nausea, fatigue, fever, belly pain, cough, rash) and I’ll give general next steps, "
+            "or use the Symptom Checker (3+ symptoms) for a preliminary AI overview."
+        )
+
+    return jsonify({"reply": reply, "disclaimer": DISCLAIMER})
+
+
 @app.route("/api/predict", methods=["POST"])
 def predict():
     if not MODEL_LOADED:
@@ -264,6 +350,11 @@ def predict():
     normalized = normalize_symptoms(raw_symptoms)
     if not normalized:
         return jsonify({"error": "Please provide at least one symptom"}), 400
+    if len(normalized) < 3:
+        return jsonify({
+            "error": "Please provide at least 3 symptoms for a more reliable assessment (the model is trained on 3–17 symptoms per case).",
+            "symptom_count": len(normalized),
+        }), 400
 
     resolved = []
     unknown = []

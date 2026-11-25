@@ -25,8 +25,13 @@ export default function SymptomCheckerScreen({ navigation }) {
 
   useEffect(() => {
     (async () => {
-      const list = await symptomService.getAllSymptoms();
-      setAllSymptoms(list);
+      try {
+        const list = await symptomService.getAllSymptoms();
+        setAllSymptoms(list || []);
+      } catch (e) {
+        setAllSymptoms([]);
+        showNotification('Cannot load symptoms. Is the backend running? Check API URL.', 'error');
+      }
     })();
   }, []);
 
@@ -47,6 +52,10 @@ export default function SymptomCheckerScreen({ navigation }) {
       showNotification('Please select at least one symptom.', 'error');
       return;
     }
+    if (selected.length < 3) {
+      showNotification('Please select at least 3 symptoms for more reliable results.', 'error');
+      return;
+    }
     setLoading(true);
     setResult(null);
     try {
@@ -62,7 +71,7 @@ export default function SymptomCheckerScreen({ navigation }) {
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <ScreenHeader title="Symptom Checker" subtitle="Preliminary AI assessment (demo)" onBack={() => navigation.goBack()} />
+        <ScreenHeader title="Symptom Checker" subtitle="Preliminary AI assessment (via model API)" onBack={() => navigation.goBack()} />
 
         <Text style={styles.label}>Search symptoms</Text>
         <TextInput
@@ -72,6 +81,11 @@ export default function SymptomCheckerScreen({ navigation }) {
           value={query}
           onChangeText={setQuery}
         />
+        {allSymptoms.length === 0 && (
+          <Text style={{ color: colors.danger, marginBottom: spacing.md, fontSize: 13 }}>
+            No symptoms loaded. Ensure the Flask backend is running (python app.py) and API URL matches your device.
+          </Text>
+        )}
 
         <View style={styles.chipWrap}>
           {filtered.map((s) => {
@@ -109,12 +123,23 @@ export default function SymptomCheckerScreen({ navigation }) {
         </View>
         <AppInput label="Additional notes" value={notes} onChangeText={setNotes} placeholder="Anything else the clinician should know?" multiline />
 
+        {selected.length > 0 && selected.length < 3 && (
+          <Text style={{ color: colors.danger, fontSize: 12, marginBottom: spacing.sm }}>
+            Select at least {3 - selected.length} more symptom(s) for reliable results (model needs 3+).
+          </Text>
+        )}
         <AppButton title="Run Assessment" onPress={onSubmit} loading={loading} style={{ marginTop: spacing.sm }} />
 
-        {loading && <LoadingBlock label="Analyzing symptoms (demo)..." />}
+        {loading && <LoadingBlock label="Analyzing symptoms..." />}
 
         {result && !loading && (
           <View style={styles.resultsWrap}>
+            {result.inputWarning ? (
+              <View style={[styles.disclaimer, { borderLeftColor: colors.danger, backgroundColor: '#FFF0F0' }]}>
+                <Text style={[styles.disclaimerTitle, { color: colors.danger }]}>Input quality warning</Text>
+                <Text style={[styles.disclaimerText, { color: colors.danger }]}>{result.inputWarning}</Text>
+              </View>
+            ) : null}
             <View style={styles.disclaimer}>
               <Text style={styles.disclaimerTitle}>Important</Text>
               <Text style={styles.disclaimerText}>{result.disclaimer}</Text>
@@ -127,7 +152,7 @@ export default function SymptomCheckerScreen({ navigation }) {
               <Text style={styles.bodyText}>Duration: {result.inputs.duration || 'Not provided'}</Text>
               <Text style={styles.bodyText}>Severity: {result.inputs.severity || 'Not provided'}</Text>
               <Text style={[styles.bodyText, { marginTop: 8, fontSize: 12, color: colors.textSecondary }]}>
-                Model scores indicate relative likelihood in this demo model logic. They are not clinically validated confidence.
+                Model scores are relative outputs from the trained model. They are not clinically validated diagnostic confidence.
               </Text>
             </AppCard>
 

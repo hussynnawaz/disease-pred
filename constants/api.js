@@ -1,4 +1,2 @@
-// For Android emulator use http://10.0.2.2:5000
-// For iOS simulator use http://localhost:5000
-// For physical device use your machine's LAN IP, e.g. http://192.168.x.x:5000
-export const API_BASE_URL = 'http://10.0.2.2:5000';
+// Use your machine LAN IP when testing on a physical device / Expo Go on same Wi-Fi.
+export const API_BASE_URL = 'http://192.168.100.106:5000';

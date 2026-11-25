@@ -17,7 +17,7 @@ export default function PatientAIAssistantScreen({ navigation }) {
     {
       id: 'm0',
       role: 'assistant',
-      text: 'Hello! I am a demo medical assistant. I can offer general guidance and help you navigate the app. I cannot diagnose conditions or prescribe medicines. How can I help today?',
+      text: 'Hello! I am a health guidance assistant (server-backed). I can offer general guidance and help you navigate the app. I cannot diagnose conditions or prescribe medicines. How can I help today?',
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
@@ -38,18 +38,31 @@ export default function PatientAIAssistantScreen({ navigation }) {
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setTyping(true);
-    const reply = await chatbotService.sendMessage(content);
-    setTyping(false);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `a-${Date.now()}`,
-        role: 'assistant',
-        text: reply,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      },
-    ]);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    try {
+      const reply = await chatbotService.sendMessage(content);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          text: reply,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch (e) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-err-${Date.now()}`,
+          role: 'assistant',
+          text: 'Could not reach the server. Make sure the backend is running and API URL is correct.',
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+    } finally {
+      setTyping(false);
+    }
   };
 
   const clearChat = () => {
@@ -70,7 +83,7 @@ export default function PatientAIAssistantScreen({ navigation }) {
         <View style={styles.header}>
           <View>
             <Text style={styles.headerTitle}>AI Assistant</Text>
-            <Text style={styles.headerSub}>Demo responses • not a real clinician</Text>
+            <Text style={styles.headerSub}>Guidance from server • not a real clinician</Text>
           </View>
           <Pressable onPress={() => setClearVisible(true)} style={styles.clearBtn}>
             <Ionicons name="trash-outline" size={20} color={colors.textSecondary} />

@@ -1,70 +1,43 @@
-import { demoDiseaseInfo } from '../data/mockData';
+import { API_BASE_URL } from '../constants/api';
 
-// Mock prediction service. In production, this will call a backend API that uses the trained model.
-// Expected API shape (for future):
-// { predictions: [{ disease, score, description, precautions }] }
-
-function simpleScore(symptoms) {
-  const text = symptoms.join(' ').toLowerCase();
-  const results = [];
-  if (text.includes('rash') || text.includes('itch')) {
-    results.push({
-      disease: 'Fungal_infection',
-      score: 0.74,
-      description: demoDiseaseInfo.Fungal_infection?.description || 'Skin-related condition (demo).',
-      precautions: demoDiseaseInfo.Fungal_infection?.precautions || [],
-    });
-  }
-  if (text.includes('headache') || text.includes('nausea') || text.includes('sensitivity')) {
-    results.push({
-      disease: 'Migraine',
-      score: 0.71,
-      description: demoDiseaseInfo.Migraine?.description || 'Neurological condition (demo).',
-      precautions: demoDiseaseInfo.Migraine?.precautions || [],
-    });
-  }
-  if (text.includes('acidity') || text.includes('stomach') || text.includes('burn')) {
-    results.push({
-      disease: 'GERD',
-      score: 0.68,
-      description: demoDiseaseInfo.GERD?.description || 'Digestive condition (demo).',
-      precautions: demoDiseaseInfo.GERD?.precautions || [],
-    });
-  }
-  if (results.length === 0) {
-    results.push({
-      disease: 'General consultation recommended',
-      score: 0.45,
-      description: 'Symptoms are non-specific in this demo. A clinician should review your case.',
-      precautions: ['Monitor symptoms', 'Seek care if symptoms worsen or persist'],
-    });
-  }
-  return results
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
-    .map((r) => ({ ...r, score: Math.round(r.score * 100) / 100 }));
-}
+const specialtyMap = {
+  Fungal_infection: 'Dermatology',
+  Migraine: 'Neurology',
+  GERD: 'Gastroenterology',
+  Diabetes: 'Endocrinology',
+  Allergy: 'Internal Medicine / Allergy',
+  'Paralysis (brain hemorrhage)': 'Neurology',
+  'Peptic ulcer diseae': 'Gastroenterology',
+};
 
 export const diseasePredictionService = {
   async predict({ symptoms = [], duration = '', severity = '', notes = '' }) {
-    await new Promise((r) => setTimeout(r, 1400));
     if (!symptoms || symptoms.length === 0) {
       throw new Error('Please select at least one symptom.');
     }
-    const predictions = simpleScore(symptoms);
-    const specialtyMap = {
-      Fungal_infection: 'Dermatology',
-      Migraine: 'Neurology',
-      GERD: 'Gastroenterology',
-      Diabetes: 'Endocrinology',
-      Allergy: 'Internal Medicine / Allergy',
-      'General consultation recommended': 'General Practice',
-    };
+    const res = await fetch(`${API_BASE_URL}/api/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symptoms }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data?.error || `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    // API returns score as percentage (0-100). UI expects fraction-like display with *100, so convert.
+    const predictions = (data.predictions || []).map((p) => ({
+      disease: p.disease,
+      score: (typeof p.score === 'number' ? p.score : 0) / 100,
+      description: p.description || '',
+      precautions: p.precautions || [],
+    }));
     return {
-      disclaimer: 'Preliminary AI-generated information only. This is not a confirmed diagnosis. Please consult a qualified healthcare professional.',
-      modelNote: 'Model scores reflect demo inference logic, not clinically validated diagnostic confidence.',
-      inputs: { symptoms, duration, severity, notes },
-      recommendedSpecialty: specialtyMap[predictions[0].disease] || 'General Practice',
+      disclaimer: data.disclaimer || 'Preliminary AI-generated information only. This is not a confirmed diagnosis.',
+      modelNote: data.score_note || 'Model score is a relative output of the trained model, not clinically validated diagnostic confidence.',
+      inputWarning: data.input_warning || null,
+      inputs: { symptoms: data.selected_symptoms || symptoms, duration, severity, notes },
+      recommendedSpecialty: specialtyMap[predictions[0]?.disease] || 'General Practice',
       predictions,
       generatedAt: new Date().toISOString(),
     };
